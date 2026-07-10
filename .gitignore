@@ -1,0 +1,19 @@
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Build artifacts (py2app, packaging)
+build/
+dist/
+*.egg-info/
+.eggs/
+*.app/
+
+# macOS
+.DS_Store
+
+# Test / logs
+.pytest_cache/
+*.log

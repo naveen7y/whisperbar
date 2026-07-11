@@ -9,7 +9,7 @@
 
 Press a global hotkey, speak, press it again, and your words are pasted into whatever app you're using — an editor, a browser, Slack, anything. WhisperBar is a lightweight, private alternative to cloud dictation tools. Transcription runs entirely on your machine via [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper). No cloud, no account, no API key — nothing you say ever leaves your Mac.
 
-<!-- TODO: add a screenshot or demo GIF of the menu bar icon in action -->
+![WhisperBar in action — press the hotkey, speak, and the transcribed text is pasted into TextEdit](docs/demo.gif)
 
 ## Features
 

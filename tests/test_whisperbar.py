@@ -10,6 +10,8 @@ break on a refactor and the ones that guard the config trust boundary.
 
 import unittest
 
+import numpy as np
+
 import whisperbar as wb
 
 
@@ -20,8 +22,15 @@ class SanitizeConfigTests(unittest.TestCase):
     def test_defaults_pass_through(self):
         out = self._san()
         for key in ("model", "device", "compute_type", "insert_method",
-                    "beam_size", "cpu_threads"):
+                    "beam_size", "cpu_threads", "live_dictation"):
             self.assertEqual(out[key], wb.DEFAULT_CONFIG[key])
+
+    def test_live_dictation_must_be_bool(self):
+        self.assertTrue(self._san(live_dictation=True)["live_dictation"])
+        for bad in ("yes", 1, None):
+            with self.subTest(bad=bad):
+                self.assertEqual(self._san(live_dictation=bad)["live_dictation"],
+                                 wb.DEFAULT_CONFIG["live_dictation"])
 
     def test_malicious_model_falls_back(self):
         # An arbitrary path/repo id must not reach the model loader.
@@ -129,6 +138,62 @@ class TranscriptHistoryTests(unittest.TestCase):
         for t in ("a", "b", "c", "d"):
             h.add(t)
         self.assertEqual(h.recent(), ["d", "c", "b"])
+
+
+class FindCommitPointTests(unittest.TestCase):
+    SR = 16000
+
+    def _speech(self, seconds, amp=0.1):
+        return np.full(int(self.SR * seconds), amp, dtype=np.float32)
+
+    def _silence(self, seconds):
+        return np.zeros(int(self.SR * seconds), dtype=np.float32)
+
+    def _find(self, audio, **kw):
+        return wb.find_commit_point(audio, self.SR, **kw)
+
+    def test_empty_region_waits(self):
+        self.assertEqual(self._find(np.zeros(0, dtype=np.float32)), 0)
+
+    def test_all_silence_waits(self):
+        self.assertEqual(self._find(self._silence(1.0)), 0)
+
+    def test_speech_then_short_silence_waits(self):
+        # 0.3s of trailing silence < 0.7s pause → still mid-phrase.
+        audio = np.concatenate([self._speech(0.5), self._silence(0.3)])
+        self.assertEqual(self._find(audio, pause_seconds=0.7), 0)
+
+    def test_speech_then_long_silence_commits_whole_region(self):
+        audio = np.concatenate([self._speech(0.5), self._silence(0.8)])
+        self.assertEqual(self._find(audio, pause_seconds=0.7), audio.size)
+
+    def test_long_continuous_speech_force_commits(self):
+        # No pause, but past the max-segment cap → force commit.
+        audio = self._speech(16.0)
+        self.assertEqual(
+            self._find(audio, pause_seconds=0.7, max_segment_seconds=15.0),
+            audio.size,
+        )
+
+    def test_zero_thresholds_commit_iff_speech(self):
+        # Flush uses this: zero pause + zero cap => commit the region only when
+        # it contains speech, skip a pure-silence tail.
+        speech = self._speech(0.5)
+        self.assertEqual(
+            self._find(speech, pause_seconds=0.0, max_segment_seconds=0.0),
+            speech.size,
+        )
+        self.assertEqual(
+            self._find(self._silence(0.5), pause_seconds=0.0, max_segment_seconds=0.0),
+            0,
+        )
+
+    def test_long_silence_never_force_commits(self):
+        # A big block of pure silence must not trigger the length cap (we don't
+        # want to run the model on nothing).
+        self.assertEqual(
+            self._find(self._silence(20.0), max_segment_seconds=15.0), 0
+        )
 
 
 if __name__ == "__main__":

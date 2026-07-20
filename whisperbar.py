@@ -69,6 +69,9 @@ DEFAULT_CONFIG = {
     # a real key uses pynput's global hotkeys.
     "hotkey": "ctrl+option+space",
     "insert_method": "paste",   # paste | type | clipboard
+    # Live dictation (beta): stream text phrase-by-phrase as you pause, instead
+    # of inserting once at the end. Always types (append-only); never revises.
+    "live_dictation": False,
     "device": "cpu",            # cpu (Apple Silicon has no CUDA)
     "compute_type": "int8",     # int8 is fast + low-memory on CPU
     # Decoding beam width. 1 (greedy) is ~1.4-1.5x faster than 5 with no
@@ -171,6 +174,11 @@ def _sanitize_config(cfg):
         log.warning(f"[config] invalid cpu_threads={cfg.get('cpu_threads')!r}; using "
                     f"{DEFAULT_CONFIG['cpu_threads']}")
         cfg["cpu_threads"] = DEFAULT_CONFIG["cpu_threads"]
+    # live_dictation: a plain bool.
+    if not isinstance(cfg.get("live_dictation"), bool):
+        log.warning(f"[config] invalid live_dictation={cfg.get('live_dictation')!r}; "
+                    f"using {DEFAULT_CONFIG['live_dictation']}")
+        cfg["live_dictation"] = DEFAULT_CONFIG["live_dictation"]
     return cfg
 
 
@@ -220,6 +228,59 @@ def save_config(cfg):
         CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
     except Exception as exc:  # noqa: BLE001
         log.error(f"[config] failed to save: {exc}")
+
+
+# --------------------------------------------------------------------------- #
+# Live-dictation segmentation (pure — no audio device / model needed)
+# --------------------------------------------------------------------------- #
+_FRAME_SECONDS = 0.03  # granularity for the silence scan (30 ms)
+
+
+def _frame_is_silent(frame, energy_threshold):
+    if frame.size == 0:
+        return True
+    rms = float(np.sqrt(np.mean(np.square(frame, dtype=np.float64))))
+    return rms < energy_threshold
+
+
+def find_commit_point(audio, sample_rate, pause_seconds=0.7,
+                      energy_threshold=0.01, max_segment_seconds=15.0):
+    """How many leading samples of `audio` to commit now (0 = keep waiting).
+
+    Commit the whole pending region once it holds speech followed by at least
+    `pause_seconds` of trailing near-silence (a natural pause), or when a region
+    that *contains speech* grows past `max_segment_seconds` (force-commit to
+    bound latency). Returns 0 for an empty or all-silence region, or while still
+    mid-phrase. Silence is judged by per-frame RMS against `energy_threshold`
+    (float32 audio in [-1, 1]).
+    """
+    n = int(audio.size)
+    if n == 0:
+        return 0
+    frame = max(1, int(sample_rate * _FRAME_SECONDS))
+
+    trailing_silent_frames = 0
+    has_speech = False
+    counting_tail = True
+    # Walk frames from the end so we can measure the trailing silence run and
+    # detect any speech in a single pass.
+    for start in reversed(range(0, n, frame)):
+        seg = audio[start:start + frame]
+        if _frame_is_silent(seg, energy_threshold):
+            if counting_tail:
+                trailing_silent_frames += 1
+        else:
+            has_speech = True
+            counting_tail = False
+
+    if not has_speech:
+        return 0
+    trailing_seconds = trailing_silent_frames * frame / sample_rate
+    if trailing_seconds >= pause_seconds:
+        return n
+    if n / sample_rate >= max_segment_seconds:
+        return n
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -313,6 +374,17 @@ class Recorder:
         )
         self._stream.start()
 
+    def snapshot(self):
+        """All audio buffered so far, without stopping the stream or clearing.
+
+        Used by live dictation to read the growing buffer while recording
+        continues. Non-destructive — stop() still returns the full utterance.
+        """
+        with self._lock:
+            if not self._frames:
+                return np.zeros(0, dtype=np.float32)
+            return np.concatenate(self._frames, axis=0).flatten()
+
     def stop(self):
         if self._stream is not None:
             self._stream.stop()
@@ -324,6 +396,71 @@ class Recorder:
             audio = np.concatenate(self._frames, axis=0).flatten()
             self._frames = []
         return audio
+
+
+# --------------------------------------------------------------------------- #
+# Live dictation consumer (commit-on-pause)
+#
+# Runs while a recording is in progress. On each tick it snapshots the growing
+# audio buffer, and whenever the pending (uncommitted) region ends in a pause —
+# per find_commit_point — it transcribes that phrase once and types it, then
+# advances past it. Append-only: phrases are never revised or backspaced. Decode
+# cost stays close to one-shot because each region is transcribed exactly once.
+# --------------------------------------------------------------------------- #
+class LiveDictation(threading.Thread):
+    def __init__(self, recorder, transcribe, on_text, tick_seconds=0.3):
+        super().__init__(daemon=True)
+        self._recorder = recorder
+        self._transcribe = transcribe   # audio (np.float32) -> str
+        self._on_text = on_text         # str -> None (types the phrase)
+        self._tick = tick_seconds
+        self._committed = 0             # samples already transcribed
+        self._parts = []               # committed phrases, for the history entry
+        self._stop = threading.Event()
+
+    def run(self):
+        # wait() returns True only when stopped → loop until then.
+        while not self._stop.wait(self._tick):
+            try:
+                self._pump()
+            except Exception as exc:  # noqa: BLE001 — keep the loop alive
+                log.error(f"[live] {exc}")
+
+    def _pump(self):
+        pending = self._recorder.snapshot()[self._committed:]
+        n = find_commit_point(pending, SAMPLE_RATE)
+        if n > 0:
+            self._commit(pending[:n], n)
+
+    def _commit(self, audio, n):
+        text = self._transcribe(audio)
+        self._committed += n
+        if text:
+            self._parts.append(text)
+            self._on_text(text)
+
+    def stop_and_flush(self):
+        """Stop ticking and transcribe whatever's left. Returns combined text.
+
+        Called from the recording-stop path. join() guarantees the tick loop has
+        exited before the final flush, so _committed/_parts aren't touched
+        concurrently.
+        """
+        self._stop.set()
+        if self.ident is not None:  # only join if the thread was ever started
+            self.join(timeout=5)
+        try:
+            pending = self._recorder.snapshot()[self._committed:]
+            # End of utterance needs no pause, but still skip a pure-silence tail
+            # (zero thresholds make find_commit_point return the region iff it
+            # holds speech) so we don't run the model on nothing.
+            n = find_commit_point(pending, SAMPLE_RATE,
+                                  pause_seconds=0.0, max_segment_seconds=0.0)
+            if n:
+                self._commit(pending[:n], n)
+        except Exception as exc:  # noqa: BLE001
+            log.error(f"[live] flush: {exc}")
+        return " ".join(self._parts).strip()
 
 
 # --------------------------------------------------------------------------- #
@@ -430,6 +567,7 @@ class WhisperBarApp(rumps.App):
         self._model_lock = threading.Lock()
         self._recorder = Recorder()
         self._recording = False
+        self._live = None  # LiveDictation consumer while live recording
         self._record_started = 0.0
         self._ui_queue = queue.Queue()
         self._history = TranscriptHistory(maxlen=3)
@@ -474,6 +612,11 @@ class WhisperBarApp(rumps.App):
             item.state = 1 if name == self.cfg["insert_method"] else 0
             method_menu.add(item)
 
+        self.live_item = rumps.MenuItem(
+            "Live dictation (beta)", callback=self._toggle_live_dictation
+        )
+        self.live_item.state = 1 if self.cfg["live_dictation"] else 0
+
         self.hotkey_item = rumps.MenuItem(
             f"Hotkey: {hotkey_label(self.cfg['hotkey'])}"
         )
@@ -487,6 +630,7 @@ class WhisperBarApp(rumps.App):
             None,
             model_menu,
             method_menu,
+            self.live_item,
             self.hotkey_item,
             None,
             rumps.MenuItem("Quit", callback=self._quit),
@@ -514,6 +658,13 @@ class WhisperBarApp(rumps.App):
                 item.state = 1 if key == name else 0
 
         return setter
+
+    def _toggle_live_dictation(self, item):
+        # Takes effect on the next dictation; an in-flight recording keeps its
+        # mode since _start_recording captured the flag when it began.
+        self.cfg["live_dictation"] = not self.cfg["live_dictation"]
+        save_config(self.cfg)
+        item.state = 1 if self.cfg["live_dictation"] else 0
 
     # ---- recent transcriptions ------------------------------------------- #
     def _rebuild_recent_menu(self):
@@ -654,18 +805,81 @@ class WhisperBarApp(rumps.App):
             self._recorder.start()
             self._recording = True
             self._record_started = time.monotonic()
-            self._set_state("recording", "Recording… (hotkey again to stop)")
+            if self.cfg["live_dictation"]:
+                self._live = LiveDictation(
+                    self._recorder, self._transcribe_audio, self._type_live
+                )
+                self._live.start()
+                self._set_state("recording", "Live… (hotkey again to stop)")
+            else:
+                self._live = None
+                self._set_state("recording", "Recording… (hotkey again to stop)")
         except Exception as exc:  # noqa: BLE001
             self._set_state("error", f"Mic error: {exc}")
             log.error(f"[audio] {exc}")
 
     def _stop_recording(self):
         self._recording = False
+        if self._live is not None:
+            live, self._live = self._live, None
+            self._set_state("transcribing", "Finishing…")
+            threading.Thread(
+                target=self._finish_live, args=(live,), daemon=True
+            ).start()
+            return
         audio = self._recorder.stop()
         self._set_state("transcribing", "Transcribing…")
         threading.Thread(
             target=self._transcribe_and_insert, args=(audio,), daemon=True
         ).start()
+
+    def _type_live(self, text):
+        """Type one finalized phrase plus a separating space (append-only)."""
+        insert_text(text, "type")
+        _kbd.type(" ")
+
+    def _finish_live(self, live):
+        try:
+            text = live.stop_and_flush()   # drains the tail from the live buffer
+            self._recorder.stop()          # then close the audio stream
+            if text:
+                self._remember(text)       # whole session recoverable as one entry
+                self._set_state("idle", f"Inserted: {preview_label(text)}")
+            else:
+                self._set_state("idle", "No speech detected")
+        except Exception as exc:  # noqa: BLE001
+            self._set_state("error", f"Live dictation failed: {exc}")
+            log.error(f"[live] finish: {exc}")
+            try:
+                self._recorder.stop()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _transcribe_audio(self, audio):
+        """Run the model on `audio` and return the decoded text ("" if none).
+
+        Shared by one-shot and live dictation. Returns "" when the model isn't
+        ready so callers can degrade gracefully.
+        """
+        with self._model_lock:
+            model = self._model
+        if model is None:
+            return ""
+        language = self.cfg.get("language") or None
+        segments, _info = model.transcribe(
+            audio,
+            language=language,
+            beam_size=self.cfg["beam_size"],
+            vad_filter=True,          # skip silence → less to decode
+            without_timestamps=True,  # dictation doesn't need timestamps
+            condition_on_previous_text=False,  # faster; avoids repeat loops
+        )
+        return " ".join(seg.text.strip() for seg in segments).strip()
+
+    def _remember(self, text):
+        """Add a full transcript to the recoverable history (main thread rebuilds)."""
+        self._history.add(text)
+        self._history_dirty = True
 
     def _transcribe_and_insert(self, audio):
         try:
@@ -678,25 +892,14 @@ class WhisperBarApp(rumps.App):
                 self._set_state("error", "Model not ready")
                 return
 
-            language = self.cfg.get("language") or None
-            segments, _info = model.transcribe(
-                audio,
-                language=language,
-                beam_size=self.cfg["beam_size"],
-                vad_filter=True,          # skip silence → less to decode
-                without_timestamps=True,  # dictation doesn't need timestamps
-                condition_on_previous_text=False,  # faster; avoids repeat loops
-            )
-            text = " ".join(seg.text.strip() for seg in segments).strip()
-
+            text = self._transcribe_audio(audio)
             if not text:
                 self._set_state("idle", "No speech detected")
                 return
 
             # Retain the transcript *before* inserting, so it's recoverable from
             # the menu even if insertion raises or the paste doesn't land.
-            self._history.add(text)
-            self._history_dirty = True
+            self._remember(text)
             insert_text(text, self.cfg["insert_method"])
             self._set_state("idle", f"Inserted: {preview_label(text)}")
         except Exception as exc:  # noqa: BLE001
@@ -740,6 +943,9 @@ class WhisperBarApp(rumps.App):
         try:
             if self._hotkey_listener is not None:
                 self._hotkey_listener.stop()
+            if self._live is not None:
+                self._live.stop_and_flush()  # stop the tick loop cleanly
+                self._live = None
             if self._recording:
                 self._recorder.stop()
         finally:

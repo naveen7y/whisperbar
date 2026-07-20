@@ -18,6 +18,7 @@ Press a global hotkey, speak, press it again, and your words are pasted into wha
 - **Global hotkey** — press once to start recording, again to transcribe and paste, from any app
 - **Multiple Whisper models** — pick the size/accuracy tradeoff that fits your machine, switchable from the menu
 - **Configurable text insertion** — paste (⌘V), simulate typing, or copy-only
+- **Live dictation (beta)** — optionally stream text as you talk: each phrase is typed when you pause, instead of all at once when you stop
 - **Recover recent transcriptions** — if a paste doesn't land where you wanted, copy any of your last 3 transcriptions from the menu bar (kept in memory only, never written to disk)
 - **No telemetry** — WhisperBar doesn't phone home, ever
 
@@ -29,6 +30,19 @@ WhisperBar sits in your menu bar as a 🎙️ icon. With the default hotkey **Co
 - Press it again → ✍️ audio is transcribed locally, then the text is pasted at your cursor
 
 You can also start/stop dictation from the menu bar without touching the hotkey.
+
+### Live dictation (beta)
+
+By default WhisperBar transcribes and inserts everything at once when you stop.
+Enable **Live dictation** in the menu to instead have text appear *as you talk*:
+each time you pause, the phrase you just spoke is transcribed and typed at your
+cursor, then recording continues. It's append-only — WhisperBar never goes back
+and edits text it already typed — so it's safe to dictate straight into any app.
+
+Because each phrase is transcribed the moment you pause, live mode does more work
+while you speak; it's best paired with a fast model (`small.en` or smaller). When
+you stop, the whole session is also saved to **Recent Transcriptions** so you can
+recover it if needed.
 
 If the text doesn't end up where you wanted — nothing was highlighted, the paste
 didn't land, or the wrong app had focus — open the menu bar 🎙️ icon and pick a

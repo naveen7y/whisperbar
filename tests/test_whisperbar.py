@@ -91,5 +91,45 @@ class HotkeyParsingTests(unittest.TestCase):
         )
 
 
+class PreviewLabelTests(unittest.TestCase):
+    def test_short_text_passes_through(self):
+        self.assertEqual(wb.preview_label("hello there"), "hello there")
+
+    def test_long_text_truncated_with_ellipsis(self):
+        text = "x" * 100
+        out = wb.preview_label(text, limit=40)
+        self.assertEqual(len(out), 40)
+        self.assertTrue(out.endswith("…"))
+        self.assertEqual(out, "x" * 39 + "…")
+
+    def test_exact_limit_not_truncated(self):
+        text = "y" * 40
+        self.assertEqual(wb.preview_label(text, limit=40), text)
+
+    def test_whitespace_and_newlines_collapse(self):
+        self.assertEqual(
+            wb.preview_label("one\n  two\t\tthree   four"),
+            "one two three four",
+        )
+
+
+class TranscriptHistoryTests(unittest.TestCase):
+    def test_empty_history_returns_nothing(self):
+        h = wb.TranscriptHistory(maxlen=3)
+        self.assertEqual(h.recent(), [])
+
+    def test_recent_is_newest_first(self):
+        h = wb.TranscriptHistory(maxlen=3)
+        h.add("first")
+        h.add("second")
+        self.assertEqual(h.recent(), ["second", "first"])
+
+    def test_keeps_only_last_n_dropping_oldest(self):
+        h = wb.TranscriptHistory(maxlen=3)
+        for t in ("a", "b", "c", "d"):
+            h.add(t)
+        self.assertEqual(h.recent(), ["d", "c", "b"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,7 @@ Press a global hotkey, speak, press it again, and your words are pasted into wha
 - **Global hotkey** — press once to start recording, again to transcribe and paste, from any app
 - **Multiple Whisper models** — pick the size/accuracy tradeoff that fits your machine, switchable from the menu
 - **Configurable text insertion** — paste (⌘V), simulate typing, or copy-only
+- **Recover recent transcriptions** — if a paste doesn't land where you wanted, copy any of your last 3 transcriptions from the menu bar (kept in memory only, never written to disk)
 - **No telemetry** — WhisperBar doesn't phone home, ever
 
 ## How it works
@@ -28,6 +29,12 @@ WhisperBar sits in your menu bar as a 🎙️ icon. With the default hotkey **Co
 - Press it again → ✍️ audio is transcribed locally, then the text is pasted at your cursor
 
 You can also start/stop dictation from the menu bar without touching the hotkey.
+
+If the text doesn't end up where you wanted — nothing was highlighted, the paste
+didn't land, or the wrong app had focus — open the menu bar 🎙️ icon and pick a
+transcript from **Recent Transcriptions** to copy it to the clipboard, then paste
+it yourself. The last 3 transcriptions are kept in memory only and cleared when
+you quit.
 
 ## Requirements
 

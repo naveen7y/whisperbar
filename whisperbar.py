@@ -16,6 +16,7 @@ import queue
 import subprocess
 import threading
 import time
+from collections import deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -222,6 +223,37 @@ def save_config(cfg):
 
 
 # --------------------------------------------------------------------------- #
+# Transcript history
+# --------------------------------------------------------------------------- #
+def preview_label(text, limit=40):
+    """Single-line, length-capped label for menus/status (… if truncated)."""
+    text = " ".join(text.split())  # collapse newlines / runs of whitespace
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+class TranscriptHistory:
+    """The last N successful transcriptions, in memory only.
+
+    Thread-safe: the writer is a background transcription thread and the reader
+    is the main (UI) thread. Never persisted — cleared when the app quits, which
+    keeps WhisperBar's "leaves no trace" promise intact.
+    """
+
+    def __init__(self, maxlen=3):
+        self._items = deque(maxlen=maxlen)
+        self._lock = threading.Lock()
+
+    def add(self, text):
+        with self._lock:
+            self._items.append(text)
+
+    def recent(self):
+        """Full transcripts, newest first."""
+        with self._lock:
+            return list(reversed(self._items))
+
+
+# --------------------------------------------------------------------------- #
 # Clipboard / text insertion helpers
 # --------------------------------------------------------------------------- #
 def set_clipboard(text: str):
@@ -400,6 +432,8 @@ class WhisperBarApp(rumps.App):
         self._recording = False
         self._record_started = 0.0
         self._ui_queue = queue.Queue()
+        self._history = TranscriptHistory(maxlen=3)
+        self._history_dirty = False
 
         self._build_menu()
 
@@ -423,6 +457,11 @@ class WhisperBarApp(rumps.App):
             "Start / Stop Dictation", callback=self.toggle_recording
         )
 
+        # Recover recent transcriptions if an insertion didn't land. Populated
+        # on the main thread by _rebuild_recent_menu (see _tick).
+        self.recent_menu = rumps.MenuItem("Recent Transcriptions")
+        self._rebuild_recent_menu()
+
         model_menu = rumps.MenuItem("Model")
         for name in MODEL_CHOICES:
             item = rumps.MenuItem(name, callback=self._make_model_setter(name))
@@ -444,6 +483,7 @@ class WhisperBarApp(rumps.App):
             self.status_item,
             None,
             self.toggle_item,
+            self.recent_menu,
             None,
             model_menu,
             method_menu,
@@ -474,6 +514,40 @@ class WhisperBarApp(rumps.App):
                 item.state = 1 if key == name else 0
 
         return setter
+
+    # ---- recent transcriptions ------------------------------------------- #
+    def _rebuild_recent_menu(self):
+        """Repopulate the Recent Transcriptions submenu. Main thread only.
+
+        rumps menu mutation isn't thread-safe, so this is only ever called from
+        _build_menu (__init__) and _tick (the rumps.Timer callback).
+        """
+        # clear() calls removeAllItems() on the submenu's NSMenu, which rumps
+        # only creates lazily on the first add() — so guard the empty first pass.
+        if len(self.recent_menu):
+            self.recent_menu.clear()
+        recent = self._history.recent()
+        if not recent:
+            empty = rumps.MenuItem("No transcriptions yet")
+            empty.set_callback(None)  # disabled/greyed
+            self.recent_menu.add(empty)
+            return
+        # Number the rows (newest = 1). Besides reading naturally as a recency
+        # list, this keeps each title unique — rumps keys submenu items by title,
+        # so two transcripts sharing a preview would otherwise collide.
+        for i, text in enumerate(recent, start=1):
+            item = rumps.MenuItem(
+                f"{i}. {preview_label(text)}",
+                callback=self._make_recent_copier(text),
+            )
+            self.recent_menu.add(item)
+
+    def _make_recent_copier(self, text):
+        def copier(_):
+            set_clipboard(text)
+            self._set_state(self.state, "Copied to clipboard")
+
+        return copier
 
     # ---- model ------------------------------------------------------------ #
     def _load_model(self):
@@ -619,9 +693,12 @@ class WhisperBarApp(rumps.App):
                 self._set_state("idle", "No speech detected")
                 return
 
+            # Retain the transcript *before* inserting, so it's recoverable from
+            # the menu even if insertion raises or the paste doesn't land.
+            self._history.add(text)
+            self._history_dirty = True
             insert_text(text, self.cfg["insert_method"])
-            preview = text if len(text) <= 40 else text[:37] + "…"
-            self._set_state("idle", f"Inserted: {preview}")
+            self._set_state("idle", f"Inserted: {preview_label(text)}")
         except Exception as exc:  # noqa: BLE001
             self._set_state("error", f"Transcription failed: {exc}")
             log.error(f"[transcribe] {exc}")
@@ -651,6 +728,12 @@ class WhisperBarApp(rumps.App):
         if updated:
             self.title = ICONS.get(self.state, ICONS["idle"])
             self.status_item.title = self.status_line
+
+        # Rebuild the Recent Transcriptions submenu here, on the main thread,
+        # after a background transcription appended to the history.
+        if self._history_dirty:
+            self._history_dirty = False
+            self._rebuild_recent_menu()
 
     # ---- quit ------------------------------------------------------------- #
     def _quit(self, _):

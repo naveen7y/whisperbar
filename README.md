@@ -94,7 +94,7 @@ You can also click the menu bar icon and choose **Start / Stop Dictation** inste
 
 ## Configuration
 
-Settings live in `~/.whisperbar/config.json` and are created with sensible defaults on first run. Some are also changeable live from the menu bar (Model, Insert method).
+Settings live in `~/.whisperbar/config.json` and are created with sensible defaults on first run. Some are also changeable live from the menu bar (Model, Insert method, Live dictation).
 
 | Key | Description | Default |
 |---|---|---|
@@ -102,6 +102,7 @@ Settings live in `~/.whisperbar/config.json` and are created with sensible defau
 | `language` | ISO language code (e.g. `en`), or `null` to auto-detect | `en` |
 | `hotkey` | Global hotkey combo (see below) | `ctrl+option+space` |
 | `insert_method` | How transcribed text is inserted: `paste`, `type`, or `clipboard` | `paste` |
+| `live_dictation` | Stream text phrase-by-phrase as you pause instead of all at once (beta). Always types; see [Live dictation](#live-dictation-beta) | `false` |
 | `device` | Inference device — `cpu` (Apple Silicon has no CUDA) | `cpu` |
 | `compute_type` | Inference precision — `int8`, `int8_float16`, `float16`, or `float32` | `int8` |
 | `beam_size` | Decoding beam width (1–10). `1` (greedy) is ~1.5× faster with no noticeable accuracy loss for dictation; raise toward `5` for maximum accuracy on harder audio | `1` |

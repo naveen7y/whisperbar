@@ -39,8 +39,14 @@ sections (look for the `# ---` banners):
 - **Config** — loading/saving `~/.whisperbar/config.json`.
 - **Hotkey parsing** — turning the config's hotkey string into pynput/Quartz
   primitives.
+- **Live-dictation segmentation** — `find_commit_point`, the pure RMS-silence
+  scan that decides when a spoken phrase is finished (pure, unit-tested).
+- **Transcript history** — `preview_label` and the in-memory `TranscriptHistory`
+  behind the Recent Transcriptions menu (never persisted).
 - **Clipboard / text insertion helpers** — how transcribed text gets pasted.
 - **Audio recorder** — `sounddevice`-based mic capture.
+- **Live dictation consumer** — the background loop that streams text
+  phrase-by-phrase while recording, built on `find_commit_point`.
 - **Modifier-combo global hotkey** — the `CGEventTap`-based listener that
   detects modifier-only combos (like Fn) that pynput can't see on its own.
 - **Menu bar app** — the `rumps.App` subclass that ties it all together:
@@ -48,7 +54,7 @@ sections (look for the `# ---` banners):
 
 If you're fixing a bug, it's usually fastest to `grep` for the relevant menu
 label or config key and follow the flow from there — the file is small enough
-(~500 lines) to read end-to-end if needed.
+to read end-to-end if needed.
 
 ## Coding style
 
@@ -65,8 +71,9 @@ around the macOS-specific quirks). When adding to it:
 
 ## Testing your changes
 
-**Automated tests.** The pure logic (config sanitization, hotkey parsing) has a
-small unit-test suite using the standard library — no extra dependencies. Run it
+**Automated tests.** The pure logic (config sanitization, hotkey parsing,
+transcript preview/history, and live-dictation segmentation) has a small
+unit-test suite using the standard library — no extra dependencies. Run it
 from the repo root inside the virtualenv:
 
 ```bash

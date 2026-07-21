@@ -18,7 +18,7 @@ Press a global hotkey, speak, press it again, and your words are pasted into wha
 - **Global hotkey** — press once to start recording, again to transcribe and paste, from any app
 - **Multiple Whisper models** — pick the size/accuracy tradeoff that fits your machine, switchable from the menu
 - **Configurable text insertion** — paste (⌘V), simulate typing, or copy-only
-- **Live dictation (beta)** — optionally stream text as you talk: each phrase is typed when you pause, instead of all at once when you stop
+- **Live dictation** — optionally stream text as you talk: each phrase is typed when you pause, instead of all at once when you stop
 - **Recover recent transcriptions** — if a paste doesn't land where you wanted, copy any of your last 3 transcriptions from the menu bar (kept in memory only, never written to disk)
 - **No telemetry** — WhisperBar doesn't phone home, ever
 
@@ -31,7 +31,7 @@ WhisperBar sits in your menu bar as a 🎙️ icon. With the default hotkey **Co
 
 You can also start/stop dictation from the menu bar without touching the hotkey.
 
-### Live dictation (beta)
+### Live dictation
 
 By default WhisperBar transcribes and inserts everything at once when you stop.
 Enable **Live dictation** in the menu to instead have text appear *as you talk*:
@@ -102,7 +102,7 @@ Settings live in `~/.whisperbar/config.json` and are created with sensible defau
 | `language` | ISO language code (e.g. `en`), or `null` to auto-detect | `en` |
 | `hotkey` | Global hotkey combo (see below) | `ctrl+option+space` |
 | `insert_method` | How transcribed text is inserted: `paste`, `type`, or `clipboard` | `paste` |
-| `live_dictation` | Stream text phrase-by-phrase as you pause instead of all at once (beta). Always types; see [Live dictation](#live-dictation-beta) | `false` |
+| `live_dictation` | Stream text phrase-by-phrase as you pause instead of all at once. Always types; see [Live dictation](#live-dictation) | `false` |
 | `device` | Inference device — `cpu` (Apple Silicon has no CUDA) | `cpu` |
 | `compute_type` | Inference precision — `int8`, `int8_float16`, `float16`, or `float32` | `int8` |
 | `beam_size` | Decoding beam width (1–10). `1` (greedy) is ~1.5× faster with no noticeable accuracy loss for dictation; raise toward `5` for maximum accuracy on harder audio | `1` |

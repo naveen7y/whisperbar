@@ -74,8 +74,8 @@ DEFAULT_CONFIG = {
     # a real key uses pynput's global hotkeys.
     "hotkey": "ctrl+option+space",
     "insert_method": "paste",   # paste | type | clipboard
-    # Live dictation (beta): stream text phrase-by-phrase as you pause, instead
-    # of inserting once at the end. Always types (append-only); never revises.
+    # Live dictation: stream text phrase-by-phrase as you pause, instead of
+    # inserting once at the end. Always types (append-only); never revises.
     "live_dictation": False,
     "device": "cpu",            # cpu (Apple Silicon has no CUDA)
     "compute_type": "int8",     # int8 is fast + low-memory on CPU
@@ -623,7 +623,7 @@ class WhisperBarApp(rumps.App):
             method_menu.add(item)
 
         self.live_item = rumps.MenuItem(
-            "Live dictation (beta)", callback=self._toggle_live_dictation
+            "Live dictation", callback=self._toggle_live_dictation
         )
         self.live_item.state = 1 if self.cfg["live_dictation"] else 0
 

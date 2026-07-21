@@ -140,6 +140,29 @@ class TranscriptHistoryTests(unittest.TestCase):
         self.assertEqual(h.recent(), ["d", "c", "b"])
 
 
+class _SilenceRecorder:
+    """Minimal Recorder stand-in: always reports a short silent buffer."""
+    def snapshot(self):
+        return np.zeros(8000, dtype=np.float32)  # 0.5s of silence
+
+
+class LiveDictationLifecycleTests(unittest.TestCase):
+    def test_stop_and_flush_after_start_does_not_raise(self):
+        # Regression: naming the stop Event `self._stop` shadowed
+        # threading.Thread._stop(), which join() invokes internally — so a
+        # started-then-stopped consumer raised "'Event' object is not callable".
+        live = wb.LiveDictation(
+            _SilenceRecorder(),
+            transcribe=lambda audio: "",
+            on_text=lambda text: None,
+            tick_seconds=0.01,
+        )
+        live.start()
+        combined = live.stop_and_flush()  # must not raise; join() runs here
+        self.assertEqual(combined, "")
+        self.assertFalse(live.is_alive())
+
+
 class FindCommitPointTests(unittest.TestCase):
     SR = 16000
 

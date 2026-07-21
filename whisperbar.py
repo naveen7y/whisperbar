@@ -31,6 +31,11 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 LOG_PATH = CONFIG_DIR / "whisperbar.log"
 SAMPLE_RATE = 16000  # Whisper expects 16 kHz mono
 MAX_RECORDING_SECONDS = 300  # safety cap: auto-stop a forgotten recording
+# Live dictation: how long a pause must last before a phrase is committed and
+# typed. Lower = snappier but risks cutting on natural mid-sentence pauses.
+# (Total on-screen latency is this plus the model's decode time for the phrase,
+# which dominates on larger/slower models — prefer a small model for live mode.)
+LIVE_PAUSE_SECONDS = 0.5
 
 log = logging.getLogger("whisperbar")
 
@@ -243,7 +248,7 @@ def _frame_is_silent(frame, energy_threshold):
     return rms < energy_threshold
 
 
-def find_commit_point(audio, sample_rate, pause_seconds=0.7,
+def find_commit_point(audio, sample_rate, pause_seconds=LIVE_PAUSE_SECONDS,
                       energy_threshold=0.01, max_segment_seconds=15.0):
     """How many leading samples of `audio` to commit now (0 = keep waiting).
 
@@ -416,15 +421,19 @@ class LiveDictation(threading.Thread):
         self._tick = tick_seconds
         self._committed = 0             # samples already transcribed
         self._parts = []               # committed phrases, for the history entry
-        self._stop = threading.Event()
+        # NB: not `self._stop` — that name shadows threading.Thread._stop(),
+        # which join() calls internally, breaking the whole thread lifecycle.
+        self._stop_event = threading.Event()
 
     def run(self):
+        log.info(f"[live] consumer thread started (tick={self._tick}s)")
         # wait() returns True only when stopped → loop until then.
-        while not self._stop.wait(self._tick):
+        while not self._stop_event.wait(self._tick):
             try:
                 self._pump()
             except Exception as exc:  # noqa: BLE001 — keep the loop alive
                 log.error(f"[live] {exc}")
+        log.info("[live] consumer thread exiting")
 
     def _pump(self):
         pending = self._recorder.snapshot()[self._committed:]
@@ -435,6 +444,7 @@ class LiveDictation(threading.Thread):
     def _commit(self, audio, n):
         text = self._transcribe(audio)
         self._committed += n
+        log.info(f"[live] committed {n / SAMPLE_RATE:.2f}s -> {preview_label(text)!r}")
         if text:
             self._parts.append(text)
             self._on_text(text)
@@ -446,7 +456,7 @@ class LiveDictation(threading.Thread):
         exited before the final flush, so _committed/_parts aren't touched
         concurrently.
         """
-        self._stop.set()
+        self._stop_event.set()
         if self.ident is not None:  # only join if the thread was ever started
             self.join(timeout=5)
         try:
@@ -665,6 +675,7 @@ class WhisperBarApp(rumps.App):
         self.cfg["live_dictation"] = not self.cfg["live_dictation"]
         save_config(self.cfg)
         item.state = 1 if self.cfg["live_dictation"] else 0
+        log.info(f"[live] toggled live_dictation={self.cfg['live_dictation']}")
 
     # ---- recent transcriptions ------------------------------------------- #
     def _rebuild_recent_menu(self):
@@ -805,6 +816,8 @@ class WhisperBarApp(rumps.App):
             self._recorder.start()
             self._recording = True
             self._record_started = time.monotonic()
+            log.info(f"[audio] recording started "
+                     f"(live_dictation={self.cfg['live_dictation']})")
             if self.cfg["live_dictation"]:
                 self._live = LiveDictation(
                     self._recorder, self._transcribe_audio, self._type_live
